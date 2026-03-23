@@ -1,0 +1,38 @@
+[Unit]
+Description=YouTube Telegram Download Bot
+Documentation=https://github.com/yourrepo/ytbot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated low-privilege user
+User=ytbot
+Group=ytbot
+
+WorkingDirectory=/opt/ytbot
+
+# Load .env variables into the service environment
+EnvironmentFile=/opt/ytbot/.env
+
+ExecStart=/opt/ytbot/venv/bin/python -m bot.main
+
+# Always restart on crash, with a 10-second back-off
+Restart=always
+RestartSec=10
+
+# Write logs to the journal (view with: journalctl -u ytbot -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ytbot
+
+# ── Security hardening ─────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ytbot/data /opt/ytbot/logs
+
+[Install]
+WantedBy=multi-user.target

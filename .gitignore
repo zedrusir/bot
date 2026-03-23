@@ -1,0 +1,17 @@
+.env
+credentials/*
+!credentials/.gitkeep
+data/downloads/*
+!data/downloads/.gitkeep
+data/*.db
+logs/*
+!logs/.gitkeep
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
