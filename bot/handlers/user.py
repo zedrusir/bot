@@ -30,6 +30,9 @@ from bot.utils.messages import (
     MSG_ERROR_FETCH,
     MSG_ERROR_GENERAL,
     MSG_FETCHING_INFO,
+    MSG_HELP,
+    MSG_HISTORY_EMPTY,
+    MSG_HISTORY_HEADER,
     MSG_INVALID_URL,
     MSG_QUALITY_SELECTION,
     MSG_RATE_LIMITED,
@@ -48,6 +51,25 @@ _YT_RE = re.compile(
     r"(youtube\.com/(watch\?.*v=|shorts/|embed/)|youtu\.be/)[\w\-]+"
 )
 
+_QUALITY_KEYBOARD = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton("📺 360p", callback_data="q_360p"),
+            InlineKeyboardButton("🎬 720p HD", callback_data="q_720p"),
+        ],
+        [
+            InlineKeyboardButton("🎥 1080p Full HD", callback_data="q_1080p"),
+            InlineKeyboardButton("⭐ بهترین کیفیت", callback_data="q_best"),
+        ],
+        [InlineKeyboardButton("🎵 فقط صدا (MP3)", callback_data="q_audio")],
+        [InlineKeyboardButton("❌ لغو", callback_data="q_cancel")],
+    ]
+)
+
+_RETRY_KEYBOARD = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("🔄 ارسال مجدد لینک", callback_data="retry_hint")]]
+)
+
 
 # ─── /start ───────────────────────────────────────────────────────────────────
 
@@ -59,6 +81,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         MSG_START.format(name=_escape_md(user.first_name or "کاربر")) + _footer(),
         parse_mode="MarkdownV2",
+    )
+
+
+# ─── /help ────────────────────────────────────────────────────────────────────
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        MSG_HELP + _footer(),
+        parse_mode="MarkdownV2",
+    )
+
+
+# ─── /history ─────────────────────────────────────────────────────────────────
+
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    history = await db.get_user_history(user.id, limit=5)
+
+    if not history:
+        await update.message.reply_text(
+            MSG_HISTORY_EMPTY + _footer(), parse_mode="MarkdownV2"
+        )
+        return
+
+    lines = [MSG_HISTORY_HEADER]
+    for i, item in enumerate(history, 1):
+        title = _escape_md(item["title"][:45])
+        quality = _escape_md(QUALITY_LABELS.get(item["quality"], item["quality"]))
+        size = _escape_md(_fmt_size(item["size"]))
+        link = item["link"]
+        lines.append(f"{i}\\. [{title}]({link})\n   {quality} \\| `{size}`\n\n")
+
+    await update.message.reply_text(
+        "".join(lines) + _footer(),
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True,
     )
 
 
@@ -104,32 +162,25 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     title = (info.get("title") or "ویدیو")[:60]
     duration = format_duration(info.get("duration"))
     views = format_views(info.get("view_count"))
+    thumbnail = info.get("thumbnail")
 
-    # Persist URL for the callback
     context.user_data["pending_url"] = text
     context.user_data["pending_title"] = title
 
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("📺 360p", callback_data="q_360p"),
-                InlineKeyboardButton("🎬 720p HD", callback_data="q_720p"),
-            ],
-            [
-                InlineKeyboardButton("🎥 1080p Full HD", callback_data="q_1080p"),
-                InlineKeyboardButton("⭐ بهترین کیفیت", callback_data="q_best"),
-            ],
-            [InlineKeyboardButton("❌ لغو", callback_data="q_cancel")],
-        ]
-    )
+    # Send thumbnail as a separate photo if available
+    if thumbnail:
+        try:
+            await update.message.reply_photo(photo=thumbnail)
+        except Exception:
+            pass
 
     await status_msg.edit_text(
         MSG_QUALITY_SELECTION.format(
             title=_escape_md(title),
-            duration=duration,
-            views=views,
+            duration=_escape_md(duration),
+            views=_escape_md(views),
         ) + _footer(),
-        reply_markup=keyboard,
+        reply_markup=_QUALITY_KEYBOARD,
         parse_mode="MarkdownV2",
     )
 
@@ -151,7 +202,7 @@ async def handle_quality_callback(
         await query.edit_message_text(MSG_CANCELLED + _footer(), parse_mode="MarkdownV2")
         return
 
-    quality = data.removeprefix("q_")  # "360p" | "720p" | "1080p" | "best"
+    quality = data.removeprefix("q_")  # "360p" | "720p" | "1080p" | "best" | "audio"
     url: str | None = context.user_data.pop("pending_url", None)
     title: str = context.user_data.pop("pending_title", "ویدیو")
 
@@ -171,7 +222,6 @@ async def handle_quality_callback(
         )
         return
 
-    # Fire-and-forget pipeline (doesn't block the handler)
     asyncio.create_task(
         _pipeline(
             user_id=user.id,
@@ -180,6 +230,19 @@ async def handle_quality_callback(
             title=title,
             message=query.message,
         )
+    )
+
+
+# ─── Retry hint callback ──────────────────────────────────────────────────────
+
+async def handle_retry_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🔄 لینک یوتیوب را دوباره ارسال کنید\\." + _footer(),
+        parse_mode="MarkdownV2",
     )
 
 
@@ -287,7 +350,11 @@ async def _pipeline(
         if download_id:
             await db.update_download(download_id, status="failed")
         try:
-            await message.edit_text(MSG_ERROR_GENERAL + _footer(), parse_mode="MarkdownV2")
+            await message.edit_text(
+                MSG_ERROR_GENERAL + _footer(),
+                parse_mode="MarkdownV2",
+                reply_markup=_RETRY_KEYBOARD,
+            )
         except Exception:
             pass
 
@@ -320,6 +387,9 @@ def _escape_md(text: str) -> str:
 
 user_handlers = [
     CommandHandler("start", cmd_start),
+    CommandHandler("help", cmd_help),
+    CommandHandler("history", cmd_history),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url),
     CallbackQueryHandler(handle_quality_callback, pattern=r"^q_"),
+    CallbackQueryHandler(handle_retry_callback, pattern=r"^retry_"),
 ]

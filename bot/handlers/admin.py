@@ -11,6 +11,7 @@ from bot.utils.messages import (
     MSG_BROADCAST_SENT,
     MSG_NOT_ADMIN,
     MSG_STATS,
+    MSG_USER_INFO,
 )
 
 
@@ -111,6 +112,41 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ شناسه کاربر باید عدد باشد\\.", parse_mode="MarkdownV2")
 
 
+# ─── /userinfo ────────────────────────────────────────────────────────────────
+
+@admin_only
+async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ استفاده: `/userinfo <user_id>`", parse_mode="MarkdownV2"
+        )
+        return
+    try:
+        target = int(context.args[0])
+        info = await db.get_user_info(target)
+        if not info:
+            await update.message.reply_text(
+                "❌ کاربری با این شناسه یافت نشد\\.", parse_mode="MarkdownV2"
+            )
+            return
+        import re
+        _MD = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+        def esc(t): return _MD.sub(r"\\\1", str(t))
+        await update.message.reply_text(
+            MSG_USER_INFO.format(
+                user_id=info["user_id"],
+                first_name=esc(info["first_name"]),
+                username=esc(info["username"]),
+                join_date=esc(info["join_date"]),
+                download_count=info["download_count"],
+                banned=esc(info["banned"]),
+            ),
+            parse_mode="MarkdownV2",
+        )
+    except ValueError:
+        await update.message.reply_text("❌ شناسه کاربر باید عدد باشد\\.", parse_mode="MarkdownV2")
+
+
 # ─── Handler list ─────────────────────────────────────────────────────────────
 
 admin_handlers = [
@@ -118,4 +154,5 @@ admin_handlers = [
     CommandHandler("broadcast", cmd_broadcast),
     CommandHandler("ban", cmd_ban),
     CommandHandler("unban", cmd_unban),
+    CommandHandler("userinfo", cmd_userinfo),
 ]

@@ -127,6 +127,40 @@ class Database:
                     )
             await db.commit()
 
+    async def get_user_history(self, user_id: int, limit: int = 5) -> list[dict]:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                """SELECT title, drive_link, file_size_mb, quality
+                   FROM downloads
+                   WHERE user_id = ? AND status = 'done' AND drive_link != ''
+                   ORDER BY created_at DESC LIMIT ?""",
+                (user_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {"title": r[0] or "نامشخص", "link": r[1], "size": r[2] or 0.0, "quality": r[3] or ""}
+            for r in rows
+        ]
+
+    async def get_user_info(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT user_id, username, first_name, join_date, is_banned, download_count "
+                "FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "user_id": row[0],
+            "username": row[1] or "ندارد",
+            "first_name": row[2] or "نامشخص",
+            "join_date": str(row[3])[:10],
+            "banned": "بله 🚫" if row[4] else "خیر ✅",
+            "download_count": row[5],
+        }
+
     # ─── Stats ────────────────────────────────────────────────────────────────
 
     async def get_stats(self) -> dict:

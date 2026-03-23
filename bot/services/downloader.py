@@ -47,6 +47,7 @@ QUALITY_FORMATS: dict[str, str] = {
         "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         "/bestvideo+bestaudio/best"
     ),
+    "audio": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
 }
 
 QUALITY_LABELS: dict[str, str] = {
@@ -54,6 +55,7 @@ QUALITY_LABELS: dict[str, str] = {
     "720p":  "720p HD 🎬",
     "1080p": "1080p Full HD 🎥",
     "best":  "بهترین کیفیت ⭐",
+    "audio": "🎵 فقط صدا",
 }
 
 ProgressCallback = Callable[..., Awaitable[None]]
@@ -112,6 +114,7 @@ async def download_video(
     download_dir.mkdir(parents=True, exist_ok=True)
 
     fmt = QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
+    is_audio = quality == "audio"
     result: dict = {
         "file_path": None,
         "download_dir": str(download_dir),
@@ -142,22 +145,23 @@ async def download_video(
                 loop,
             )
 
+    postprocessors = (
+        [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+        if is_audio
+        else [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
+    )
+
     ydl_opts = {
         "format": fmt,
         "outtmpl": str(download_dir / "%(title)s.%(ext)s"),
-        "merge_output_format": "mp4",
+        "merge_output_format": None if is_audio else "mp4",
         "progress_hooks": [_progress_hook],
         "quiet": True,
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
         **_base_ydl_opts(),
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "mp4",
-            }
-        ],
+        "postprocessors": postprocessors,
     }
 
     def _download() -> None:
