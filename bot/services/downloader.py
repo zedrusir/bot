@@ -10,13 +10,18 @@ from loguru import logger
 from bot.config import config
 
 
-def _cookies_opt() -> dict:
-    """Return cookiefile option if the file exists, else empty dict."""
+def _base_ydl_opts() -> dict:
+    """Base yt-dlp options shared by all calls."""
+    opts: dict = {
+        # Use TV client — bypasses n-challenge and bot detection without needing JS solver
+        "extractor_args": {"youtube": {"player_client": ["tv", "web"]}},
+    }
     p = Path(config.YT_COOKIES_PATH)
     if p.exists():
-        return {"cookiefile": str(p)}
-    logger.warning("YT cookies file not found at {} — YouTube may block requests", p)
-    return {}
+        opts["cookiefile"] = str(p)
+    else:
+        logger.warning("YT cookies file not found at {} — YouTube may block requests", p)
+    return opts
 
 # ─── Quality format strings ───────────────────────────────────────────────────
 QUALITY_FORMATS: dict[str, str] = {
@@ -75,7 +80,7 @@ def format_views(views: Optional[int]) -> str:
 
 async def get_video_info(url: str) -> dict:
     """Fetch video metadata *without* downloading anything."""
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_cookies_opt()}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_base_ydl_opts()}
     loop = asyncio.get_event_loop()
 
     def _fetch() -> dict:
@@ -143,7 +148,7 @@ async def download_video(
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
-        **_cookies_opt(),
+        **_base_ydl_opts(),
         "postprocessors": [
             {
                 "key": "FFmpegVideoConvertor",
