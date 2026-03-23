@@ -24,7 +24,8 @@ def _build_service():
     creds = service_account.Credentials.from_service_account_file(
         config.SERVICE_ACCOUNT_PATH, scopes=SCOPES
     )
-    if config.PROXY_URL:
+    proxy_info = None
+    if config.PROXY_URL and getattr(httplib2, "socks", None) is not None:
         p = urlparse(config.PROXY_URL)
         proxy_info = httplib2.ProxyInfo(
             proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
@@ -33,9 +34,7 @@ def _build_service():
             proxy_user=p.username,
             proxy_pass=p.password,
         )
-        http = httplib2.Http(proxy_info=proxy_info, timeout=_TIMEOUT)
-    else:
-        http = httplib2.Http(timeout=_TIMEOUT)
+    http = httplib2.Http(proxy_info=proxy_info, timeout=_TIMEOUT)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build("drive", "v3", http=authorized_http, cache_discovery=False)
 
