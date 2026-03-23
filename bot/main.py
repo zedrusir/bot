@@ -38,12 +38,13 @@ def main() -> None:
 
     logger.info("Building application…")
 
-    app = (
-        Application.builder()
-        .token(config.BOT_TOKEN)
-        .post_init(_post_init)
-        .build()
-    )
+    builder = Application.builder().token(config.BOT_TOKEN).post_init(_post_init)
+
+    if config.PROXY_URL:
+        logger.info("Using proxy: {}", config.PROXY_URL)
+        builder = builder.proxy(config.PROXY_URL).get_updates_proxy(config.PROXY_URL)
+
+    app = builder.build()
 
     for handler in user_handlers + admin_handlers:
         app.add_handler(handler)
