@@ -8,6 +8,9 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 BASE_DIR = Path(__file__).parent.parent
 
 
+VERSION = "1.2.0"
+
+
 class Config:
     # ── Telegram ──────────────────────────────────────────────
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")

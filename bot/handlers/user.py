@@ -36,7 +36,9 @@ from bot.utils.messages import (
     MSG_SESSION_EXPIRED,
     MSG_START,
     MSG_UPLOADING,
+    MSG_VERSION_FOOTER,
 )
+from bot.config import VERSION
 from bot.utils.progress import ProgressUpdater, make_progress_bar
 from bot.utils.rate_limiter import rate_limiter
 
@@ -55,7 +57,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user.id, user.username or "", user.first_name or ""
     )
     await update.message.reply_text(
-        MSG_START.format(name=_escape_md(user.first_name or "کاربر")),
+        MSG_START.format(name=_escape_md(user.first_name or "کاربر")) + _footer(),
         parse_mode="MarkdownV2",
     )
 
@@ -71,11 +73,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
     if await db.is_banned(user.id):
-        await update.message.reply_text(MSG_BANNED, parse_mode="MarkdownV2")
+        await update.message.reply_text(MSG_BANNED + _footer(), parse_mode="MarkdownV2")
         return
 
     if not _YT_RE.search(text):
-        await update.message.reply_text(MSG_INVALID_URL, parse_mode="MarkdownV2")
+        await update.message.reply_text(MSG_INVALID_URL + _footer(), parse_mode="MarkdownV2")
         return
 
     if rate_limiter.is_at_limit(user.id):
@@ -83,20 +85,20 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             MSG_RATE_LIMITED.format(
                 count=rate_limiter.get_active_count(user.id),
                 max=config.MAX_CONCURRENT_PER_USER,
-            ),
+            ) + _footer(),
             parse_mode="MarkdownV2",
         )
         return
 
     status_msg = await update.message.reply_text(
-        MSG_FETCHING_INFO, parse_mode="MarkdownV2"
+        MSG_FETCHING_INFO + _footer(), parse_mode="MarkdownV2"
     )
 
     try:
         info = await get_video_info(text)
     except Exception as exc:
         logger.warning("get_video_info failed for {}: {}", text, exc)
-        await status_msg.edit_text(MSG_ERROR_FETCH, parse_mode="MarkdownV2")
+        await status_msg.edit_text(MSG_ERROR_FETCH + _footer(), parse_mode="MarkdownV2")
         return
 
     title = (info.get("title") or "ویدیو")[:60]
@@ -126,7 +128,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             title=_escape_md(title),
             duration=duration,
             views=views,
-        ),
+        ) + _footer(),
         reply_markup=keyboard,
         parse_mode="MarkdownV2",
     )
@@ -146,7 +148,7 @@ async def handle_quality_callback(
     if data == "q_cancel":
         context.user_data.pop("pending_url", None)
         context.user_data.pop("pending_title", None)
-        await query.edit_message_text(MSG_CANCELLED, parse_mode="MarkdownV2")
+        await query.edit_message_text(MSG_CANCELLED + _footer(), parse_mode="MarkdownV2")
         return
 
     quality = data.removeprefix("q_")  # "360p" | "720p" | "1080p" | "best"
@@ -155,7 +157,7 @@ async def handle_quality_callback(
 
     if not url:
         await query.edit_message_text(
-            MSG_SESSION_EXPIRED, parse_mode="MarkdownV2"
+            MSG_SESSION_EXPIRED + _footer(), parse_mode="MarkdownV2"
         )
         return
 
@@ -164,7 +166,7 @@ async def handle_quality_callback(
             MSG_RATE_LIMITED.format(
                 count=rate_limiter.get_active_count(user.id),
                 max=config.MAX_CONCURRENT_PER_USER,
-            ),
+            ) + _footer(),
             parse_mode="MarkdownV2",
         )
         return
@@ -214,7 +216,7 @@ async def _pipeline(
                     downloaded=dl_s,
                     total=total_s,
                     eta=eta_s,
-                )
+                ) + _footer()
             )
 
         await progress.force_update(
@@ -226,7 +228,7 @@ async def _pipeline(
                 downloaded="0 MB",
                 total="؟",
                 eta="...",
-            )
+            ) + _footer()
         )
 
         dl = await download_video(url, quality, _on_dl)
@@ -243,7 +245,7 @@ async def _pipeline(
                     size=_fmt_size(size_mb),
                     progress_bar=make_progress_bar(percent),
                     percent=percent,
-                )
+                ) + _footer()
             )
 
         await progress.force_update(
@@ -252,7 +254,7 @@ async def _pipeline(
                 size=_fmt_size(size_mb),
                 progress_bar=make_progress_bar(0),
                 percent=0,
-            )
+            ) + _footer()
         )
 
         drive = await upload_to_drive(file_path, user_id, _on_up)
@@ -273,7 +275,7 @@ async def _pipeline(
                 quality=qlabel,
                 size=_fmt_size(size_mb),
                 link=drive["link"],
-            )
+            ) + _footer()
         )
         logger.info(
             "Pipeline done for user {} — '{}' ({:.1f} MB)",
@@ -285,7 +287,7 @@ async def _pipeline(
         if download_id:
             await db.update_download(download_id, status="failed")
         try:
-            await message.edit_text(MSG_ERROR_GENERAL, parse_mode="MarkdownV2")
+            await message.edit_text(MSG_ERROR_GENERAL + _footer(), parse_mode="MarkdownV2")
         except Exception:
             pass
 
@@ -300,6 +302,10 @@ async def _pipeline(
 
 def _fmt_size(mb: float) -> str:
     return f"{mb / 1024:.2f} GB" if mb >= 1024 else f"{mb:.1f} MB"
+
+
+def _footer() -> str:
+    return MSG_VERSION_FOOTER.format(version=_escape_md(VERSION))
 
 
 # Characters that must be escaped in MarkdownV2 plain text (not inside `…`)

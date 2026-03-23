@@ -108,3 +108,5 @@ MSG_BROADCAST_SENT = (
     "✅ پیام به `{sent}` کاربر ارسال شد\\.\n"
     "❌ `{failed}` مورد ناموفق\\."
 )
+
+MSG_VERSION_FOOTER = "\n\n_🤖 v{version}_"
