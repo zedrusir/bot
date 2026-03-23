@@ -13,9 +13,9 @@ from bot.config import config
 def _base_ydl_opts() -> dict:
     """Base yt-dlp options shared by all calls."""
     opts: dict = {
-        # web client + EJS remote solver = works on servers
         "extractor_args": {"youtube": {"player_client": ["web"]}},
         "remote_components": ["ejs:github"],
+        "js_runtimes": {"node": {}},
     }
     p = Path(config.YT_COOKIES_PATH)
     if p.exists():
