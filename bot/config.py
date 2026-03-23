@@ -38,6 +38,13 @@ class Config:
     LOG_DIR: Path = BASE_DIR / "logs"
     LOG_FILE: str = str(BASE_DIR / "logs" / "bot.log")
 
+    # ── YouTube cookies (required for bot-detection bypass)
+    # Export from browser using "Get cookies.txt LOCALLY" extension (Netscape format)
+    YT_COOKIES_PATH: str = os.getenv(
+        "YT_COOKIES_PATH",
+        str(BASE_DIR / "credentials" / "cookies.txt"),
+    )
+
     # ── Proxy (optional — for servers that can't reach Telegram directly)
     # Format: socks5://user:pass@host:port  or  http://user:pass@host:port
     PROXY_URL: str = os.getenv("PROXY_URL", "")

@@ -9,6 +9,15 @@ from loguru import logger
 
 from bot.config import config
 
+
+def _cookies_opt() -> dict:
+    """Return cookiefile option if the file exists, else empty dict."""
+    p = Path(config.YT_COOKIES_PATH)
+    if p.exists():
+        return {"cookiefile": str(p)}
+    logger.warning("YT cookies file not found at {} — YouTube may block requests", p)
+    return {}
+
 # ─── Quality format strings ───────────────────────────────────────────────────
 QUALITY_FORMATS: dict[str, str] = {
     "360p": (
@@ -66,7 +75,7 @@ def format_views(views: Optional[int]) -> str:
 
 async def get_video_info(url: str) -> dict:
     """Fetch video metadata *without* downloading anything."""
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_cookies_opt()}
     loop = asyncio.get_event_loop()
 
     def _fetch() -> dict:
@@ -134,6 +143,7 @@ async def download_video(
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
+        **_cookies_opt(),
         "postprocessors": [
             {
                 "key": "FFmpegVideoConvertor",
