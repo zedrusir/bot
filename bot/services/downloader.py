@@ -13,7 +13,7 @@ from bot.config import config
 def _base_ydl_opts() -> dict:
     """Base yt-dlp options shared by all calls."""
     opts: dict = {
-        # web client + EJS remote solver + node runtime = works on servers
+        # web client + EJS remote solver = works on servers
         "extractor_args": {"youtube": {"player_client": ["web"]}},
         "remote_components": ["ejs:github"],
     }
@@ -22,6 +22,8 @@ def _base_ydl_opts() -> dict:
         opts["cookiefile"] = str(p)
     else:
         logger.warning("YT cookies file not found at {} — YouTube may block requests", p)
+    if config.PROXY_URL:
+        opts["proxy"] = config.PROXY_URL
     return opts
 
 # ─── Quality format strings ───────────────────────────────────────────────────
