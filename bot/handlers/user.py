@@ -25,7 +25,9 @@ from bot.services.uploader import upload_to_drive
 from bot.utils.messages import (
     MSG_BANNED,
     MSG_CANCELLED,
+    MSG_DESTINATION_SELECTION,
     MSG_DONE,
+    MSG_DONE_TELEGRAM,
     MSG_DOWNLOADING,
     MSG_ERROR_FETCH,
     MSG_ERROR_GENERAL,
@@ -36,8 +38,10 @@ from bot.utils.messages import (
     MSG_INVALID_URL,
     MSG_QUALITY_SELECTION,
     MSG_RATE_LIMITED,
+    MSG_SENDING_TELEGRAM,
     MSG_SESSION_EXPIRED,
     MSG_START,
+    MSG_TOO_LARGE_TELEGRAM,
     MSG_UPLOADING,
     MSG_VERSION_FOOTER,
 )
@@ -66,9 +70,21 @@ _QUALITY_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+_DESTINATION_KEYBOARD = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton("☁️ Google Drive", callback_data="dest_drive"),
+            InlineKeyboardButton("📱 تلگرام", callback_data="dest_telegram"),
+        ],
+        [InlineKeyboardButton("❌ لغو", callback_data="dest_cancel")],
+    ]
+)
+
 _RETRY_KEYBOARD = InlineKeyboardMarkup(
     [[InlineKeyboardButton("🔄 ارسال مجدد لینک", callback_data="retry_hint")]]
 )
+
+_TELEGRAM_MAX_MB = 50.0
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -167,19 +183,32 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     context.user_data["pending_url"] = text
     context.user_data["pending_title"] = title
 
-    # Send thumbnail as a separate photo if available
-    if thumbnail:
-        try:
-            await update.message.reply_photo(photo=thumbnail)
-        except Exception:
-            pass
-
-    await status_msg.edit_text(
+    caption = (
         MSG_QUALITY_SELECTION.format(
             title=_escape_md(title),
             duration=_escape_md(duration),
             views=_escape_md(views),
-        ) + _footer(),
+        )
+        + _footer()
+    )
+
+    # Send photo with caption + keyboard as a single message
+    if thumbnail:
+        try:
+            await status_msg.delete()
+            await update.message.reply_photo(
+                photo=thumbnail,
+                caption=caption,
+                parse_mode="MarkdownV2",
+                reply_markup=_QUALITY_KEYBOARD,
+            )
+            return
+        except Exception:
+            pass  # fall through to text message
+
+    # Fallback: text message with keyboard
+    await status_msg.edit_text(
+        caption,
         reply_markup=_QUALITY_KEYBOARD,
         parse_mode="MarkdownV2",
     )
@@ -193,34 +222,82 @@ async def handle_quality_callback(
     query = update.callback_query
     await query.answer()
 
-    user = update.effective_user
     data: str = query.data  # type: ignore[assignment]
 
     if data == "q_cancel":
         context.user_data.pop("pending_url", None)
         context.user_data.pop("pending_title", None)
-        await query.edit_message_text(MSG_CANCELLED + _footer(), parse_mode="MarkdownV2")
+        await _edit_message(query.message, MSG_CANCELLED + _footer())
         return
 
-    quality = data.removeprefix("q_")  # "360p" | "720p" | "1080p" | "best" | "audio"
-    url: str | None = context.user_data.pop("pending_url", None)
-    title: str = context.user_data.pop("pending_title", "ویدیو")
+    quality = data.removeprefix("q_")
+    url: str | None = context.user_data.get("pending_url")
+    title: str = context.user_data.get("pending_title", "ویدیو")
 
     if not url:
-        await query.edit_message_text(
-            MSG_SESSION_EXPIRED + _footer(), parse_mode="MarkdownV2"
+        await _edit_message(query.message, MSG_SESSION_EXPIRED + _footer())
+        return
+
+    context.user_data["pending_quality"] = quality
+
+    qlabel = QUALITY_LABELS.get(quality, quality)
+    dest_caption = (
+        MSG_DESTINATION_SELECTION.format(
+            title=_escape_md(title),
+            quality=_escape_md(qlabel),
         )
+        + _footer()
+    )
+
+    await _edit_message(query.message, dest_caption, reply_markup=_DESTINATION_KEYBOARD)
+
+
+# ─── Destination selection callback ──────────────────────────────────────────
+
+async def handle_destination_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    data: str = query.data  # type: ignore[assignment]
+
+    if data == "dest_cancel":
+        context.user_data.pop("pending_url", None)
+        context.user_data.pop("pending_title", None)
+        context.user_data.pop("pending_quality", None)
+        await _edit_message(query.message, MSG_CANCELLED + _footer())
+        return
+
+    destination = data.removeprefix("dest_")  # "drive" | "telegram"
+    url: str | None = context.user_data.pop("pending_url", None)
+    title: str = context.user_data.pop("pending_title", "ویدیو")
+    quality: str = context.user_data.pop("pending_quality", "best")
+
+    if not url:
+        await _edit_message(query.message, MSG_SESSION_EXPIRED + _footer())
         return
 
     if rate_limiter.is_at_limit(user.id):
-        await query.edit_message_text(
+        await _edit_message(
+            query.message,
             MSG_RATE_LIMITED.format(
                 count=rate_limiter.get_active_count(user.id),
                 max=config.MAX_CONCURRENT_PER_USER,
             ) + _footer(),
-            parse_mode="MarkdownV2",
         )
         return
+
+    # Remove keyboard, send a fresh text message for progress tracking
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    status_msg = await query.message.reply_text(
+        "⏳ در حال شروع\\.\\.\\." + _footer(), parse_mode="MarkdownV2"
+    )
 
     asyncio.create_task(
         _pipeline(
@@ -228,7 +305,10 @@ async def handle_quality_callback(
             url=url,
             quality=quality,
             title=title,
-            message=query.message,
+            message=status_msg,
+            destination=destination,
+            chat_id=update.effective_chat.id,
+            context=context,
         )
     )
 
@@ -254,6 +334,9 @@ async def _pipeline(
     quality: str,
     title: str,
     message,
+    destination: str,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await rate_limiter.acquire(user_id)
     download_dir: str | None = None
@@ -300,49 +383,93 @@ async def _pipeline(
         size_mb: float = dl["size_mb"]
         final_title: str = dl["title"]
 
-        # ── Phase 2: Upload ─────────────────────────────────────────────────
-        async def _on_up(*, percent, **_):
-            await progress.update(
-                MSG_UPLOADING.format(
+        # ── Phase 2: Send to destination ────────────────────────────────────
+        if destination == "telegram" and size_mb <= _TELEGRAM_MAX_MB:
+            await progress.force_update(
+                MSG_SENDING_TELEGRAM.format(
                     title=_escape_md(final_title[:45]),
-                    size=_fmt_size(size_mb),
-                    progress_bar=make_progress_bar(percent),
-                    percent=percent,
+                    size=_escape_md(_fmt_size(size_mb)),
                 ) + _footer()
             )
 
-        await progress.force_update(
-            MSG_UPLOADING.format(
-                title=_escape_md(final_title[:45]),
-                size=_fmt_size(size_mb),
-                progress_bar=make_progress_bar(0),
-                percent=0,
-            ) + _footer()
-        )
+            with open(file_path, "rb") as f:
+                if quality == "audio":
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=f,
+                        title=final_title[:64],
+                    )
+                else:
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=f,
+                        caption=f"🎬 {final_title[:200]}",
+                        supports_streaming=True,
+                    )
 
-        drive = await upload_to_drive(file_path, user_id, _on_up)
+            await db.update_download(
+                download_id, title=final_title, file_size_mb=size_mb, status="done"
+            )
+            await progress.force_update(
+                MSG_DONE_TELEGRAM.format(
+                    title=_escape_md(final_title[:60]),
+                    quality=qlabel,
+                    size=_escape_md(_fmt_size(size_mb)),
+                ) + _footer()
+            )
 
-        # ── Persist & notify ────────────────────────────────────────────────
-        await db.update_download(
-            download_id,
-            title=final_title,
-            file_size_mb=size_mb,
-            drive_id=drive["file_id"],
-            drive_link=drive["link"],
-            status="done",
-        )
+        else:
+            # Drive upload (default, or fallback when file > 50 MB for Telegram)
+            if destination == "telegram" and size_mb > _TELEGRAM_MAX_MB:
+                await progress.force_update(
+                    MSG_TOO_LARGE_TELEGRAM.format(
+                        size=_escape_md(_fmt_size(size_mb))
+                    ) + _footer()
+                )
+                await asyncio.sleep(3)
 
-        await progress.force_update(
-            MSG_DONE.format(
-                title=_escape_md(final_title[:60]),
-                quality=qlabel,
-                size=_fmt_size(size_mb),
-                link=drive["link"],
-            ) + _footer()
-        )
+            async def _on_up(*, percent, **_):
+                await progress.update(
+                    MSG_UPLOADING.format(
+                        title=_escape_md(final_title[:45]),
+                        size=_fmt_size(size_mb),
+                        progress_bar=make_progress_bar(percent),
+                        percent=percent,
+                    ) + _footer()
+                )
+
+            await progress.force_update(
+                MSG_UPLOADING.format(
+                    title=_escape_md(final_title[:45]),
+                    size=_fmt_size(size_mb),
+                    progress_bar=make_progress_bar(0),
+                    percent=0,
+                ) + _footer()
+            )
+
+            drive = await upload_to_drive(file_path, user_id, _on_up)
+
+            await db.update_download(
+                download_id,
+                title=final_title,
+                file_size_mb=size_mb,
+                drive_id=drive["file_id"],
+                drive_link=drive["link"],
+                status="done",
+            )
+
+            await progress.force_update(
+                MSG_DONE.format(
+                    title=_escape_md(final_title[:60]),
+                    quality=qlabel,
+                    size=_fmt_size(size_mb),
+                    link=drive["link"],
+                ) + _footer()
+            )
+
         logger.info(
-            "Pipeline done for user {} — '{}' ({:.1f} MB)",
-            user_id, final_title, size_mb,
+            "Pipeline done for user {} — '{}' ({:.1f} MB) → {}",
+            user_id, final_title, size_mb, destination,
         )
 
     except Exception as exc:
@@ -365,7 +492,26 @@ async def _pipeline(
             logger.debug("Cleaned up {}", download_dir)
 
 
-# ─── Tiny helpers ─────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async def _edit_message(message, text: str, reply_markup=None) -> None:
+    """Edit a message whether it's a photo (caption) or text."""
+    try:
+        if message.photo:
+            await message.edit_caption(
+                caption=text,
+                parse_mode="MarkdownV2",
+                reply_markup=reply_markup,
+            )
+        else:
+            await message.edit_text(
+                text,
+                parse_mode="MarkdownV2",
+                reply_markup=reply_markup,
+            )
+    except Exception:
+        pass
+
 
 def _fmt_size(mb: float) -> str:
     return f"{mb / 1024:.2f} GB" if mb >= 1024 else f"{mb:.1f} MB"
@@ -375,7 +521,6 @@ def _footer() -> str:
     return MSG_VERSION_FOOTER.format(version=_escape_md(VERSION))
 
 
-# Characters that must be escaped in MarkdownV2 plain text (not inside `…`)
 _MD_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 
 
@@ -391,5 +536,6 @@ user_handlers = [
     CommandHandler("history", cmd_history),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url),
     CallbackQueryHandler(handle_quality_callback, pattern=r"^q_"),
+    CallbackQueryHandler(handle_destination_callback, pattern=r"^dest_"),
     CallbackQueryHandler(handle_retry_callback, pattern=r"^retry_"),
 ]
