@@ -55,7 +55,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user.id, user.username or "", user.first_name or ""
     )
     await update.message.reply_text(
-        MSG_START.format(name=user.first_name or "کاربر"),
+        MSG_START.format(name=_escape_md(user.first_name or "کاربر")),
         parse_mode="MarkdownV2",
     )
 
