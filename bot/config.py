@@ -22,9 +22,13 @@ class Config:
     ]
 
     # ── Google Drive ──────────────────────────────────────────
-    SERVICE_ACCOUNT_PATH: str = os.getenv(
-        "SERVICE_ACCOUNT_PATH",
-        str(BASE_DIR / "credentials" / "service_account.json"),
+    OAUTH_CLIENT_PATH: str = os.getenv(
+        "OAUTH_CLIENT_PATH",
+        str(BASE_DIR / "credentials" / "oauth_client.json"),
+    )
+    OAUTH_TOKEN_PATH: str = os.getenv(
+        "OAUTH_TOKEN_PATH",
+        str(BASE_DIR / "credentials" / "token.json"),
     )
     DRIVE_FOLDER_ID: str = os.getenv("DRIVE_FOLDER_ID", "")
 
@@ -47,8 +51,13 @@ class Config:
             missing.append("BOT_TOKEN")
         if not self.DRIVE_FOLDER_ID:
             missing.append("DRIVE_FOLDER_ID")
-        if not Path(self.SERVICE_ACCOUNT_PATH).exists():
-            missing.append(f"SERVICE_ACCOUNT_PATH ({self.SERVICE_ACCOUNT_PATH} not found)")
+        if not Path(self.OAUTH_CLIENT_PATH).exists():
+            missing.append(f"OAUTH_CLIENT_PATH ({self.OAUTH_CLIENT_PATH} not found)")
+        if not Path(self.OAUTH_TOKEN_PATH).exists():
+            missing.append(
+                f"OAUTH_TOKEN_PATH ({self.OAUTH_TOKEN_PATH} not found) — "
+                "run: python setup_oauth.py"
+            )
         if missing:
             raise RuntimeError(
                 f"Missing required configuration: {', '.join(missing)}\n"

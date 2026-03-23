@@ -5,7 +5,7 @@ from typing import Awaitable, Callable, Optional
 import requests
 from google.auth.transport.requests import AuthorizedSession
 from google.auth.transport.requests import Request as GoogleAuthRequest
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from loguru import logger
 
 from bot.config import config
@@ -22,20 +22,24 @@ _UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
 # ─── Session factory ──────────────────────────────────────────────────────────
 
 def _make_session() -> AuthorizedSession:
-    creds = service_account.Credentials.from_service_account_file(
-        config.SERVICE_ACCOUNT_PATH, scopes=SCOPES
-    )
+    creds = Credentials.from_authorized_user_file(config.OAUTH_TOKEN_PATH, scopes=SCOPES)
+
     proxies = (
         {"http": config.PROXY_URL, "https": config.PROXY_URL}
         if config.PROXY_URL else {}
     )
+
     # Use same proxy for token refresh
     refresh_session = requests.Session()
     if proxies:
         refresh_session.proxies.update(proxies)
-    auth_request = GoogleAuthRequest(session=refresh_session)
 
-    session = AuthorizedSession(creds, auth_request=auth_request)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest(session=refresh_session))
+        # Persist refreshed token
+        Path(config.OAUTH_TOKEN_PATH).write_text(creds.to_json())
+
+    session = AuthorizedSession(creds, auth_request=GoogleAuthRequest(session=refresh_session))
     if proxies:
         session.proxies.update(proxies)
     return session
