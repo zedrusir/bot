@@ -27,36 +27,50 @@ def _base_ydl_opts() -> dict:
     return opts
 
 # ─── Quality format strings ───────────────────────────────────────────────────
+def _vfmt(h: int) -> str:
+    return (
+        f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]"
+        f"/bestvideo[height<={h}]+bestaudio"
+        f"/best[height<={h}]/best"
+    )
+
+
 QUALITY_FORMATS: dict[str, str] = {
-    "360p": (
-        "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=360]+bestaudio"
-        "/best[height<=360]/best"
-    ),
-    "720p": (
-        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=720]+bestaudio"
-        "/best[height<=720]/best"
-    ),
-    "1080p": (
-        "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=1080]+bestaudio"
-        "/best[height<=1080]/best"
-    ),
-    "best": (
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo+bestaudio/best"
-    ),
-    "audio": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+    # ── Video ──────────────────────────────────────────────────────────────
+    "144p":  _vfmt(144),
+    "240p":  _vfmt(240),
+    "360p":  _vfmt(360),
+    "480p":  _vfmt(480),
+    "720p":  _vfmt(720),
+    "1080p": _vfmt(1080),
+    "1440p": _vfmt(1440),
+    "4k":    _vfmt(2160),
+    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+    # ── Audio ──────────────────────────────────────────────────────────────
+    "mp3_128": "bestaudio",
+    "mp3_320": "bestaudio",
+    "m4a":     "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+    "audio":   "bestaudio",       # legacy alias → mp3 192k
 }
 
 QUALITY_LABELS: dict[str, str] = {
-    "360p":  "360p SD 📺",
-    "720p":  "720p HD 🎬",
-    "1080p": "1080p Full HD 🎥",
-    "best":  "بهترین کیفیت ⭐",
-    "audio": "🎵 فقط صدا",
+    "144p":    "144p 📱",
+    "240p":    "240p 📱",
+    "360p":    "360p SD 📺",
+    "480p":    "480p SD 📺",
+    "720p":    "720p HD 🎬",
+    "1080p":   "1080p Full HD 🎥",
+    "1440p":   "1440p 2K 🖥",
+    "4k":      "4K Ultra HD 🌟",
+    "best":    "بهترین کیفیت ⭐",
+    "mp3_128": "🎵 MP3 — 128 kbps",
+    "mp3_320": "🎵 MP3 — 320 kbps",
+    "m4a":     "🎶 M4A — بدون تبدیل",
+    "audio":   "🎵 MP3 — 192 kbps",
 }
+
+_AUDIO_QUALITIES = {"mp3_128", "mp3_320", "m4a", "audio"}
+_MP3_BITRATES = {"mp3_128": "128", "mp3_320": "320", "audio": "192"}
 
 ProgressCallback = Callable[..., Awaitable[None]]
 
@@ -114,7 +128,7 @@ async def download_video(
     download_dir.mkdir(parents=True, exist_ok=True)
 
     fmt = QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
-    is_audio = quality == "audio"
+    is_audio = quality in _AUDIO_QUALITIES
     result: dict = {
         "file_path": None,
         "download_dir": str(download_dir),
@@ -145,11 +159,18 @@ async def download_video(
                 loop,
             )
 
-    postprocessors = (
-        [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
-        if is_audio
-        else [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
-    )
+    if quality == "m4a":
+        postprocessors = []
+    elif quality in _MP3_BITRATES:
+        postprocessors = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": _MP3_BITRATES[quality],
+        }]
+    elif is_audio:
+        postprocessors = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    else:
+        postprocessors = [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
 
     ydl_opts = {
         "format": fmt,
