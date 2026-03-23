@@ -13,8 +13,9 @@ from bot.config import config
 def _base_ydl_opts() -> dict:
     """Base yt-dlp options shared by all calls."""
     opts: dict = {
-        # Use TV client — bypasses n-challenge and bot detection without needing JS solver
-        "extractor_args": {"youtube": {"player_client": ["tv", "web"]}},
+        # web client + EJS remote solver + node runtime = works on servers
+        "extractor_args": {"youtube": {"player_client": ["web"]}},
+        "remote_components": ["ejs:github"],
     }
     p = Path(config.YT_COOKIES_PATH)
     if p.exists():
