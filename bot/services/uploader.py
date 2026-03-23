@@ -1,13 +1,11 @@
 import asyncio
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
-from urllib.parse import urlparse
 
-import httplib2
-import google_auth_httplib2
+import requests
+from google.auth.transport.requests import AuthorizedSession
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 from loguru import logger
 
 from bot.config import config
@@ -15,31 +13,37 @@ from bot.config import config
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 ProgressCallback = Callable[..., Awaitable[None]]
 
-_TIMEOUT = 300  # 5 minutes
+_TIMEOUT = 300
+_CHUNK = 5 * 1024 * 1024  # 5 MB chunks
+_DRIVE_API = "https://www.googleapis.com/drive/v3"
+_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
+
+
+# ─── Session factory ──────────────────────────────────────────────────────────
+
+def _make_session() -> AuthorizedSession:
+    creds = service_account.Credentials.from_service_account_file(
+        config.SERVICE_ACCOUNT_PATH, scopes=SCOPES
+    )
+    proxies = (
+        {"http": config.PROXY_URL, "https": config.PROXY_URL}
+        if config.PROXY_URL else {}
+    )
+    # Use same proxy for token refresh
+    refresh_session = requests.Session()
+    if proxies:
+        refresh_session.proxies.update(proxies)
+    auth_request = GoogleAuthRequest(session=refresh_session)
+
+    session = AuthorizedSession(creds, auth_request=auth_request)
+    if proxies:
+        session.proxies.update(proxies)
+    return session
 
 
 # ─── Drive helpers (sync — run inside executor) ───────────────────────────────
 
-def _build_service():
-    creds = service_account.Credentials.from_service_account_file(
-        config.SERVICE_ACCOUNT_PATH, scopes=SCOPES
-    )
-    proxy_info = None
-    if config.PROXY_URL and getattr(httplib2, "socks", None) is not None:
-        p = urlparse(config.PROXY_URL)
-        proxy_info = httplib2.ProxyInfo(
-            proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
-            proxy_host=p.hostname,
-            proxy_port=p.port or 80,
-            proxy_user=p.username,
-            proxy_pass=p.password,
-        )
-    http = httplib2.Http(proxy_info=proxy_info, timeout=_TIMEOUT)
-    authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
-    return build("drive", "v3", http=authorized_http, cache_discovery=False)
-
-
-def _get_or_create_folder(service, name: str, parent_id: str) -> str:
+def _get_or_create_folder(session: AuthorizedSession, name: str, parent_id: str) -> str:
     """Return the ID of an existing sub-folder or create it under *parent_id*."""
     safe_name = name.replace("'", "\\'")
     query = (
@@ -48,23 +52,34 @@ def _get_or_create_folder(service, name: str, parent_id: str) -> str:
         f"and '{parent_id}' in parents "
         f"and trashed=false"
     )
-    res = service.files().list(q=query, fields="files(id)").execute()
-    files = res.get("files", [])
+    resp = session.get(
+        f"{_DRIVE_API}/files",
+        params={"q": query, "fields": "files(id)"},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    files = resp.json().get("files", [])
     if files:
         return files[0]["id"]
 
-    metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id],
-    }
-    folder = service.files().create(body=metadata, fields="id").execute()
-    logger.info("Created Drive folder '{}' ({})", name, folder["id"])
-    return folder["id"]
+    resp = session.post(
+        f"{_DRIVE_API}/files",
+        json={
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id],
+        },
+        params={"fields": "id"},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    folder_id = resp.json()["id"]
+    logger.info("Created Drive folder '{}' ({})", name, folder_id)
+    return folder_id
 
 
 def _upload_file(
-    service,
+    session: AuthorizedSession,
     file_path: str,
     folder_id: str,
     loop: asyncio.AbstractEventLoop,
@@ -73,43 +88,65 @@ def _upload_file(
     file_name = Path(file_path).name
     file_size = Path(file_path).stat().st_size
 
-    metadata = {"name": file_name, "parents": [folder_id]}
-    media = MediaFileUpload(
-        file_path,
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=5 * 1024 * 1024,  # 5 MB chunks
+    # Initiate resumable upload session
+    init_resp = session.post(
+        _UPLOAD_API,
+        params={"uploadType": "resumable", "fields": "id,webViewLink"},
+        json={"name": file_name, "parents": [folder_id]},
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": "video/mp4",
+            "X-Upload-Content-Length": str(file_size),
+        },
+        timeout=_TIMEOUT,
     )
+    init_resp.raise_for_status()
+    upload_uri = init_resp.headers["Location"]
 
-    request = service.files().create(
-        body=metadata,
-        media_body=media,
-        fields="id,webViewLink",
-    )
+    # Upload chunks
+    uploaded = 0
+    file_id = None
+    web_view_link = None
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status and progress_cb:
-            uploaded = status.resumable_progress
-            percent = int(uploaded / file_size * 100) if file_size else 0
-            asyncio.run_coroutine_threadsafe(
-                progress_cb(percent=percent, uploaded=uploaded, total=file_size),
-                loop,
+    with open(file_path, "rb") as f:
+        while uploaded < file_size:
+            chunk = f.read(_CHUNK)
+            end = uploaded + len(chunk) - 1
+            resp = session.put(
+                upload_uri,
+                data=chunk,
+                headers={
+                    "Content-Range": f"bytes {uploaded}-{end}/{file_size}",
+                    "Content-Type": "video/mp4",
+                },
+                timeout=_TIMEOUT,
             )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                file_id = data["id"]
+                web_view_link = data.get("webViewLink")
+                uploaded = file_size
+            elif resp.status_code == 308:
+                uploaded = end + 1
+                if progress_cb:
+                    percent = int(uploaded / file_size * 100)
+                    asyncio.run_coroutine_threadsafe(
+                        progress_cb(percent=percent, uploaded=uploaded, total=file_size),
+                        loop,
+                    )
+            else:
+                resp.raise_for_status()
 
     # Make file viewable by anyone with the link
-    service.permissions().create(
-        fileId=response["id"],
-        body={"type": "anyone", "role": "reader"},
-    ).execute()
+    session.post(
+        f"{_DRIVE_API}/files/{file_id}/permissions",
+        json={"type": "anyone", "role": "reader"},
+        timeout=_TIMEOUT,
+    ).raise_for_status()
 
-    link = response.get(
-        "webViewLink",
-        f"https://drive.google.com/file/d/{response['id']}/view",
-    )
+    link = web_view_link or f"https://drive.google.com/file/d/{file_id}/view"
     logger.info("Uploaded '{}' → {}", file_name, link)
-    return {"file_id": response["id"], "link": link}
+    return {"file_id": file_id, "link": link}
 
 
 # ─── Public async API ─────────────────────────────────────────────────────────
@@ -130,10 +167,8 @@ async def upload_to_drive(
     loop = asyncio.get_event_loop()
 
     def _run() -> dict:
-        service = _build_service()
-        folder_id = _get_or_create_folder(
-            service, str(user_chat_id), config.DRIVE_FOLDER_ID
-        )
-        return _upload_file(service, file_path, folder_id, loop, progress_cb)
+        session = _make_session()
+        folder_id = _get_or_create_folder(session, str(user_chat_id), config.DRIVE_FOLDER_ID)
+        return _upload_file(session, file_path, folder_id, loop, progress_cb)
 
     return await loop.run_in_executor(None, _run)
