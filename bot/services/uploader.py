@@ -1,7 +1,10 @@
 import asyncio
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
+from urllib.parse import urlparse
 
+import httplib2
+import google_auth_httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -12,6 +15,8 @@ from bot.config import config
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 ProgressCallback = Callable[..., Awaitable[None]]
 
+_TIMEOUT = 300  # 5 minutes
+
 
 # ─── Drive helpers (sync — run inside executor) ───────────────────────────────
 
@@ -19,7 +24,20 @@ def _build_service():
     creds = service_account.Credentials.from_service_account_file(
         config.SERVICE_ACCOUNT_PATH, scopes=SCOPES
     )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    if config.PROXY_URL:
+        p = urlparse(config.PROXY_URL)
+        proxy_info = httplib2.ProxyInfo(
+            proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
+            proxy_host=p.hostname,
+            proxy_port=p.port or 80,
+            proxy_user=p.username,
+            proxy_pass=p.password,
+        )
+        http = httplib2.Http(proxy_info=proxy_info, timeout=_TIMEOUT)
+    else:
+        http = httplib2.Http(timeout=_TIMEOUT)
+    authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+    return build("drive", "v3", http=authorized_http, cache_discovery=False)
 
 
 def _get_or_create_folder(service, name: str, parent_id: str) -> str:
