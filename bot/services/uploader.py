@@ -100,6 +100,8 @@ def _upload_file(
         },
         timeout=_TIMEOUT,
     )
+    if not init_resp.ok:
+        logger.error("Drive upload init failed {}: {}", init_resp.status_code, init_resp.text)
     init_resp.raise_for_status()
     upload_uri = init_resp.headers["Location"]
 
