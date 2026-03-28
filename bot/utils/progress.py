@@ -1,5 +1,8 @@
 import time
+
+from loguru import logger
 from telegram import Message
+from telegram.error import BadRequest, RetryAfter
 
 
 class ProgressUpdater:
@@ -28,9 +31,15 @@ class ProgressUpdater:
             )
             self._last_text = text
             self._last_update = now
-        except Exception:
-            # Silently swallow "message not modified" and rate-limit errors
+        except RetryAfter:
+            # Telegram rate-limit — skip this update, next one will go through
             pass
+        except BadRequest as exc:
+            # "Message is not modified" is expected; anything else is a real error
+            if "message is not modified" not in str(exc).lower():
+                logger.warning("ProgressUpdater: unexpected BadRequest: {}", exc)
+        except Exception as exc:
+            logger.warning("ProgressUpdater: failed to edit message: {}", exc)
 
     async def force_update(self, text: str) -> None:
         await self.update(text, force=True)

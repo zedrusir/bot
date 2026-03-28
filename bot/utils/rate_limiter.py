@@ -40,8 +40,16 @@ class RateLimiter:
         self._active[user_id] += 1
 
     def release(self, user_id: int) -> None:
-        self._sem(user_id).release()
+        sem = self._semaphores.get(user_id)
+        if sem:
+            sem.release()
         self._active[user_id] = max(0, self._active[user_id] - 1)
+        # Reclaim memory for idle users: semaphore is fully released and
+        # no one is active, so it's safe to remove the entry.
+        if self._active[user_id] == 0:
+            self._semaphores.pop(user_id, None)
+            # Remove from defaultdict to avoid unbounded growth
+            self._active.pop(user_id, None)
 
 
 rate_limiter = RateLimiter()

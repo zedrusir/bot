@@ -8,7 +8,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 BASE_DIR = Path(__file__).parent.parent
 
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 
 class Config:

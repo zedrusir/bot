@@ -38,6 +38,24 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             """)
+            # Indexes for frequently queried columns
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_downloads_user_id "
+                "ON downloads(user_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_downloads_status "
+                "ON downloads(status)"
+            )
+            await db.execute(
+                # Covers history queries: WHERE user_id = ? AND status = 'done' ORDER BY created_at DESC
+                "CREATE INDEX IF NOT EXISTS idx_downloads_user_status_time "
+                "ON downloads(user_id, status, created_at DESC)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_is_banned "
+                "ON users(is_banned)"
+            )
             await db.commit()
         logger.info("Database ready at {}", self.path)
 
@@ -111,20 +129,28 @@ class Database:
         set_clause = ", ".join(f"{k} = ?" for k in kwargs)
         values = list(kwargs.values()) + [download_id]
         async with aiosqlite.connect(self.path) as db:
+            # Check if we should increment download_count BEFORE applying the update,
+            # so we only count transitions into 'done' (not duplicate calls with status='done')
+            should_increment_for: int | None = None
+            if kwargs.get("status") == "done":
+                async with db.execute(
+                    "SELECT user_id FROM downloads WHERE id = ? AND status != 'done'",
+                    (download_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                    if row:
+                        should_increment_for = row[0]
+
             await db.execute(
                 f"UPDATE downloads SET {set_clause} WHERE id = ?", values
             )
-            if kwargs.get("status") == "done":
-                async with db.execute(
-                    "SELECT user_id FROM downloads WHERE id = ?", (download_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-                if row:
-                    await db.execute(
-                        "UPDATE users SET download_count = download_count + 1 "
-                        "WHERE user_id = ?",
-                        (row[0],),
-                    )
+
+            if should_increment_for is not None:
+                await db.execute(
+                    "UPDATE users SET download_count = download_count + 1 WHERE user_id = ?",
+                    (should_increment_for,),
+                )
+
             await db.commit()
 
     async def get_user_history(self, user_id: int, limit: int = 5) -> list[dict]:
@@ -132,13 +158,18 @@ class Database:
             async with db.execute(
                 """SELECT title, drive_link, file_size_mb, quality
                    FROM downloads
-                   WHERE user_id = ? AND status = 'done' AND drive_link != ''
+                   WHERE user_id = ? AND status = 'done'
                    ORDER BY created_at DESC LIMIT ?""",
                 (user_id, limit),
             ) as cur:
                 rows = await cur.fetchall()
         return [
-            {"title": r[0] or "نامشخص", "link": r[1], "size": r[2] or 0.0, "quality": r[3] or ""}
+            {
+                "title": r[0] or "نامشخص",
+                "link": r[1] or "",       # empty string for Telegram-only downloads
+                "size": r[2] or 0.0,
+                "quality": r[3] or "",
+            }
             for r in rows
         ]
 

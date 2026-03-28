@@ -50,6 +50,7 @@ from bot.utils.messages import (
     MSG_TOO_LARGE_TELEGRAM,
     MSG_UPLOADING,
     MSG_VERSION_FOOTER,
+    escape_md,
 )
 from bot.config import VERSION
 from bot.utils.progress import ProgressUpdater, make_progress_bar
@@ -121,7 +122,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     await db.add_or_update_user(user.id, user.username or "", user.first_name or "")
     await update.message.reply_text(
-        MSG_START.format(name=_escape_md(user.first_name or "کاربر")) + _footer(),
+        MSG_START.format(name=escape_md(user.first_name or "کاربر")) + _footer(),
         parse_mode="MarkdownV2",
     )
 
@@ -144,10 +145,13 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     lines = [MSG_HISTORY_HEADER]
     for i, item in enumerate(history, 1):
-        title = _escape_md(item["title"][:45])
-        quality = _escape_md(QUALITY_LABELS.get(item["quality"], item["quality"]))
-        size = _escape_md(_fmt_size(item["size"]))
-        lines.append(f"{i}\\. [{title}]({item['link']})\n   {quality} \\| `{size}`\n\n")
+        title = escape_md(item["title"][:45])
+        quality = escape_md(QUALITY_LABELS.get(item["quality"], item["quality"]))
+        size = escape_md(_fmt_size(item["size"]))
+        if item["link"]:
+            lines.append(f"{i}\\. [{title}]({item['link']})\n   {quality} \\| `{size}`\n\n")
+        else:
+            lines.append(f"{i}\\. {title}\n   📱 تلگرام \\| {quality} \\| `{size}`\n\n")
     await update.message.reply_text(
         "".join(lines) + _footer(),
         parse_mode="MarkdownV2",
@@ -208,17 +212,17 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if is_yt:
         caption = (
             MSG_QUALITY_SELECTION.format(
-                title=_escape_md(title),
-                duration=_escape_md(duration),
-                views=_escape_md(views),
+                title=escape_md(title),
+                duration=escape_md(duration),
+                views=escape_md(views),
             )
             + _footer()
         )
     else:
         caption = (
             MSG_QUALITY_SELECTION_GENERIC.format(
-                title=_escape_md(title),
-                duration=_escape_md(duration),
+                title=escape_md(title),
+                duration=escape_md(duration),
             )
             + _footer()
         )
@@ -258,7 +262,7 @@ async def handle_quality_callback(
         title = context.user_data.get("pending_title", "ویدیو")
         caption = (
             MSG_QUALITY_SELECTION.format(
-                title=_escape_md(title),
+                title=escape_md(title),
                 duration="",
                 views="",
             ).rstrip()
@@ -272,7 +276,7 @@ async def handle_quality_callback(
         title = context.user_data.get("pending_title", "ویدیو")
         caption = (
             MSG_QUALITY_SELECTION.format(
-                title=_escape_md(title),
+                title=escape_md(title),
                 duration="",
                 views="",
             ).rstrip()
@@ -339,8 +343,8 @@ async def handle_quality_callback(
     await _edit_message(
         query.message,
         MSG_DESTINATION_SELECTION.format(
-            title=_escape_md(title),
-            quality=_escape_md(qlabel),
+            title=escape_md(title),
+            quality=escape_md(qlabel),
         ) + _footer(),
         reply_markup=_DESTINATION_KEYBOARD,
     )
@@ -435,7 +439,7 @@ async def handle_file_to_drive(
     file_size_mb = (getattr(file_obj, "file_size", 0) or 0) / (1024 * 1024)
     if file_size_mb > _DRIVE_MAX_MB:
         await message.reply_text(
-            MSG_FILE_TOO_LARGE.format(size=_escape_md(_fmt_size(file_size_mb))) + _footer(),
+            MSG_FILE_TOO_LARGE.format(size=escape_md(_fmt_size(file_size_mb))) + _footer(),
             parse_mode="MarkdownV2",
         )
         return
@@ -454,8 +458,8 @@ async def handle_file_to_drive(
 
     status_msg = await message.reply_text(
         MSG_FILE_RECEIVED.format(
-            name=_escape_md(file_name[:60]),
-            size=_escape_md(_fmt_size(file_size_mb)),
+            name=escape_md(file_name[:60]),
+            size=escape_md(_fmt_size(file_size_mb)),
         ) + _footer(),
         parse_mode="MarkdownV2",
     )
@@ -492,7 +496,7 @@ async def _file_to_drive_pipeline(
         async def _on_up(*, percent, **_):
             await progress.update(
                 MSG_UPLOADING.format(
-                    title=_escape_md(file_name[:45]),
+                    title=escape_md(file_name[:45]),
                     size=_fmt_size(file_size_mb),
                     progress_bar=make_progress_bar(percent),
                     percent=percent,
@@ -501,7 +505,7 @@ async def _file_to_drive_pipeline(
 
         await progress.force_update(
             MSG_UPLOADING.format(
-                title=_escape_md(file_name[:45]),
+                title=escape_md(file_name[:45]),
                 size=_fmt_size(file_size_mb),
                 progress_bar=make_progress_bar(0),
                 percent=0,
@@ -512,8 +516,8 @@ async def _file_to_drive_pipeline(
 
         await progress.force_update(
             MSG_FILE_DONE.format(
-                name=_escape_md(file_name[:60]),
-                size=_escape_md(_fmt_size(file_size_mb)),
+                name=escape_md(file_name[:60]),
+                size=escape_md(_fmt_size(file_size_mb)),
                 link=drive["link"],
             ) + _footer()
         )
@@ -575,7 +579,7 @@ async def _pipeline(
             eta_s = f"{eta}s" if eta else "..."
             await progress.update(
                 MSG_DOWNLOADING.format(
-                    title=_escape_md(title[:45]),
+                    title=escape_md(title[:45]),
                     quality=qlabel,
                     progress_bar=make_progress_bar(percent),
                     speed=speed_s,
@@ -587,7 +591,7 @@ async def _pipeline(
 
         await progress.force_update(
             MSG_DOWNLOADING.format(
-                title=_escape_md(title[:45]),
+                title=escape_md(title[:45]),
                 quality=qlabel,
                 progress_bar=make_progress_bar(0),
                 speed="...",
@@ -607,8 +611,8 @@ async def _pipeline(
         if destination == "telegram" and size_mb <= _TELEGRAM_MAX_MB:
             await progress.force_update(
                 MSG_SENDING_TELEGRAM.format(
-                    title=_escape_md(final_title[:45]),
-                    size=_escape_md(_fmt_size(size_mb)),
+                    title=escape_md(final_title[:45]),
+                    size=escape_md(_fmt_size(size_mb)),
                 ) + _footer()
             )
             with open(file_path, "rb") as f:
@@ -623,22 +627,22 @@ async def _pipeline(
             await db.update_download(download_id, title=final_title, file_size_mb=size_mb, status="done")
             await progress.force_update(
                 MSG_DONE_TELEGRAM.format(
-                    title=_escape_md(final_title[:60]),
+                    title=escape_md(final_title[:60]),
                     quality=qlabel,
-                    size=_escape_md(_fmt_size(size_mb)),
+                    size=escape_md(_fmt_size(size_mb)),
                 ) + _footer()
             )
         else:
             if destination == "telegram" and size_mb > _TELEGRAM_MAX_MB:
                 await progress.force_update(
-                    MSG_TOO_LARGE_TELEGRAM.format(size=_escape_md(_fmt_size(size_mb))) + _footer()
+                    MSG_TOO_LARGE_TELEGRAM.format(size=escape_md(_fmt_size(size_mb))) + _footer()
                 )
                 await asyncio.sleep(3)
 
             async def _on_up(*, percent, **_):
                 await progress.update(
                     MSG_UPLOADING.format(
-                        title=_escape_md(final_title[:45]),
+                        title=escape_md(final_title[:45]),
                         size=_fmt_size(size_mb),
                         progress_bar=make_progress_bar(percent),
                         percent=percent,
@@ -647,7 +651,7 @@ async def _pipeline(
 
             await progress.force_update(
                 MSG_UPLOADING.format(
-                    title=_escape_md(final_title[:45]),
+                    title=escape_md(final_title[:45]),
                     size=_fmt_size(size_mb),
                     progress_bar=make_progress_bar(0),
                     percent=0,
@@ -665,7 +669,7 @@ async def _pipeline(
             )
             await progress.force_update(
                 MSG_DONE.format(
-                    title=_escape_md(final_title[:60]),
+                    title=escape_md(final_title[:60]),
                     quality=qlabel,
                     size=_fmt_size(size_mb),
                     link=drive["link"],
@@ -710,14 +714,9 @@ def _fmt_size(mb: float) -> str:
 
 
 def _footer() -> str:
-    return MSG_VERSION_FOOTER.format(version=_escape_md(VERSION))
+    return MSG_VERSION_FOOTER.format(version=escape_md(VERSION))
 
 
-_MD_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
-
-
-def _escape_md(text: str) -> str:
-    return _MD_SPECIAL.sub(r"\\\1", text)
 
 
 # ─── Handler list ─────────────────────────────────────────────────────────────

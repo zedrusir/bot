@@ -213,3 +213,14 @@ MSG_BROADCAST_SENT = (
 )
 
 MSG_VERSION_FOOTER = "\n\n_🤖 v{version}_"
+
+
+# ─── Shared text utility ──────────────────────────────────────────────────────
+
+import re as _re
+_MD_SPECIAL = _re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+
+def escape_md(text: str) -> str:
+    """Escape all MarkdownV2 special characters in *text*."""
+    return _MD_SPECIAL.sub(r"\\\1", str(text))

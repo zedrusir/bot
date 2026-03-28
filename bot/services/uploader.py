@@ -1,4 +1,6 @@
 import asyncio
+import mimetypes
+import threading
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -18,26 +20,27 @@ _CHUNK = 5 * 1024 * 1024  # 5 MB chunks
 _DRIVE_API = "https://www.googleapis.com/drive/v3"
 _UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
 
+# Prevents concurrent threads from corrupting token.json during refresh
+_token_lock = threading.Lock()
+
 
 # ─── Session factory ──────────────────────────────────────────────────────────
 
 def _make_session() -> AuthorizedSession:
-    creds = Credentials.from_authorized_user_file(config.OAUTH_TOKEN_PATH, scopes=SCOPES)
-
     proxies = (
         {"http": config.PROXY_URL, "https": config.PROXY_URL}
         if config.PROXY_URL else {}
     )
-
-    # Use same proxy for token refresh
     refresh_session = requests.Session()
     if proxies:
         refresh_session.proxies.update(proxies)
 
-    if creds.expired and creds.refresh_token:
-        creds.refresh(GoogleAuthRequest(session=refresh_session))
-        # Persist refreshed token
-        Path(config.OAUTH_TOKEN_PATH).write_text(creds.to_json())
+    with _token_lock:
+        creds = Credentials.from_authorized_user_file(config.OAUTH_TOKEN_PATH, scopes=SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GoogleAuthRequest(session=refresh_session))
+            Path(config.OAUTH_TOKEN_PATH).write_text(creds.to_json())
+            logger.debug("OAuth token refreshed and persisted")
 
     session = AuthorizedSession(creds, auth_request=GoogleAuthRequest(session=refresh_session))
     if proxies:
@@ -49,7 +52,8 @@ def _make_session() -> AuthorizedSession:
 
 def _get_or_create_folder(session: AuthorizedSession, name: str, parent_id: str) -> str:
     """Return the ID of an existing sub-folder or create it under *parent_id*."""
-    safe_name = name.replace("'", "\\'")
+    # Use parameterized-style quoting: only single-quote the name, nothing else
+    safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
     query = (
         f"name='{safe_name}' "
         f"and mimeType='application/vnd.google-apps.folder' "
@@ -92,6 +96,9 @@ def _upload_file(
     file_name = Path(file_path).name
     file_size = Path(file_path).stat().st_size
 
+    # Detect MIME type from file extension; fall back to octet-stream
+    mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
     # Initiate resumable upload session
     init_resp = session.post(
         _UPLOAD_API,
@@ -99,7 +106,7 @@ def _upload_file(
         json={"name": file_name, "parents": [folder_id]},
         headers={
             "Content-Type": "application/json; charset=UTF-8",
-            "X-Upload-Content-Type": "video/mp4",
+            "X-Upload-Content-Type": mime_type,
             "X-Upload-Content-Length": str(file_size),
         },
         timeout=_TIMEOUT,
@@ -123,7 +130,7 @@ def _upload_file(
                 data=chunk,
                 headers={
                     "Content-Range": f"bytes {uploaded}-{end}/{file_size}",
-                    "Content-Type": "video/mp4",
+                    "Content-Type": mime_type,
                 },
                 timeout=_TIMEOUT,
             )
@@ -151,7 +158,7 @@ def _upload_file(
     ).raise_for_status()
 
     link = web_view_link or f"https://drive.google.com/file/d/{file_id}/view"
-    logger.info("Uploaded '{}' → {}", file_name, link)
+    logger.info("Uploaded '{}' ({}) → {}", file_name, mime_type, link)
     return {"file_id": file_id, "link": link}
 
 

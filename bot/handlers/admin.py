@@ -12,6 +12,7 @@ from bot.utils.messages import (
     MSG_NOT_ADMIN,
     MSG_STATS,
     MSG_USER_INFO,
+    escape_md,
 )
 
 
@@ -108,6 +109,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             f"✅ کاربر `{target}` رفع مسدودی شد\\.", parse_mode="MarkdownV2"
         )
+        logger.info("Admin {} unbanned user {}", update.effective_user.id, target)
     except ValueError:
         await update.message.reply_text("❌ شناسه کاربر باید عدد باشد\\.", parse_mode="MarkdownV2")
 
@@ -129,17 +131,14 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "❌ کاربری با این شناسه یافت نشد\\.", parse_mode="MarkdownV2"
             )
             return
-        import re
-        _MD = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
-        def esc(t): return _MD.sub(r"\\\1", str(t))
         await update.message.reply_text(
             MSG_USER_INFO.format(
                 user_id=info["user_id"],
-                first_name=esc(info["first_name"]),
-                username=esc(info["username"]),
-                join_date=esc(info["join_date"]),
+                first_name=escape_md(info["first_name"]),
+                username=escape_md(info["username"]),
+                join_date=escape_md(info["join_date"]),
                 download_count=info["download_count"],
-                banned=esc(info["banned"]),
+                banned=escape_md(info["banned"]),
             ),
             parse_mode="MarkdownV2",
         )

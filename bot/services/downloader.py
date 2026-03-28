@@ -16,6 +16,7 @@ def _base_ydl_opts() -> dict:
         "extractor_args": {"youtube": {"player_client": ["web"]}},
         "remote_components": ["ejs:github"],
         "js_runtimes": {"node": {}},
+        "socket_timeout": 30,       # abort stalled connections after 30 s
     }
     p = Path(config.YT_COOKIES_PATH)
     if p.exists():
@@ -32,6 +33,7 @@ def _base_ydl_opts_generic() -> dict:
     opts: dict = {
         "concurrent_fragment_downloads": 4,   # speed up HLS/DASH segment downloads
         "hls_prefer_native": False,            # use ffmpeg for HLS — more reliable muxing
+        "socket_timeout": 30,
     }
     if config.PROXY_URL:
         opts["proxy"] = config.PROXY_URL
@@ -203,15 +205,21 @@ async def download_video(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             result["title"] = info.get("title", "Unknown")
-            # yt-dlp may change the extension after merge; locate the file
+            # yt-dlp may change the extension after merge; locate the newest file
             if not result["file_path"] or not Path(result["file_path"]).exists():
-                mp4_files = list(download_dir.glob("*.mp4"))
+                mp4_files = sorted(
+                    download_dir.glob("*.mp4"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
                 if mp4_files:
                     result["file_path"] = str(mp4_files[0])
                 else:
-                    all_files = [
-                        f for f in download_dir.iterdir() if f.is_file()
-                    ]
+                    all_files = sorted(
+                        [f for f in download_dir.iterdir() if f.is_file()],
+                        key=lambda f: f.stat().st_mtime,
+                        reverse=True,
+                    )
                     if all_files:
                         result["file_path"] = str(all_files[0])
 
