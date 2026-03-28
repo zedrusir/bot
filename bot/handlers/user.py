@@ -42,6 +42,7 @@ from bot.utils.messages import (
     MSG_HISTORY_HEADER,
     MSG_INVALID_URL,
     MSG_QUALITY_SELECTION,
+    MSG_QUALITY_SELECTION_GENERIC,
     MSG_RATE_LIMITED,
     MSG_SENDING_TELEGRAM,
     MSG_SESSION_EXPIRED,
@@ -58,6 +59,11 @@ _YT_RE = re.compile(
     r"(https?://)?(www\.)?"
     r"(youtube\.com/(watch\?.*v=|shorts/|embed/)|youtu\.be/)[\w\-]+"
 )
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _is_youtube(url: str) -> bool:
+    return bool(_YT_RE.search(url))
 
 _TELEGRAM_MAX_MB = 50.0
 _DRIVE_MAX_MB = 2048.0  # 2 GB
@@ -161,9 +167,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(MSG_BANNED + _footer(), parse_mode="MarkdownV2")
         return
 
-    if not _YT_RE.search(text):
+    url_match = _URL_RE.search(text)
+    if not url_match:
         await update.message.reply_text(MSG_INVALID_URL + _footer(), parse_mode="MarkdownV2")
         return
+
+    url = url_match.group().rstrip(".,;!?")
+    is_yt = _is_youtube(url)
 
     if rate_limiter.is_at_limit(user.id):
         await update.message.reply_text(
@@ -180,9 +190,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
     try:
-        info = await get_video_info(text)
+        info = await get_video_info(url, is_youtube=is_yt)
     except Exception as exc:
-        logger.warning("get_video_info failed for {}: {}", text, exc)
+        logger.warning("get_video_info failed for {}: {}", url, exc)
         await status_msg.edit_text(MSG_ERROR_FETCH + _footer(), parse_mode="MarkdownV2")
         return
 
@@ -191,17 +201,27 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     views = format_views(info.get("view_count"))
     thumbnail = info.get("thumbnail")
 
-    context.user_data["pending_url"] = text
+    context.user_data["pending_url"] = url
     context.user_data["pending_title"] = title
+    context.user_data["pending_is_youtube"] = is_yt
 
-    caption = (
-        MSG_QUALITY_SELECTION.format(
-            title=_escape_md(title),
-            duration=_escape_md(duration),
-            views=_escape_md(views),
+    if is_yt:
+        caption = (
+            MSG_QUALITY_SELECTION.format(
+                title=_escape_md(title),
+                duration=_escape_md(duration),
+                views=_escape_md(views),
+            )
+            + _footer()
         )
-        + _footer()
-    )
+    else:
+        caption = (
+            MSG_QUALITY_SELECTION_GENERIC.format(
+                title=_escape_md(title),
+                duration=_escape_md(duration),
+            )
+            + _footer()
+        )
 
     if thumbnail:
         try:
@@ -266,14 +286,56 @@ async def handle_quality_callback(
     quality = data.removeprefix("q_")
     url: str | None = context.user_data.get("pending_url")
     title: str = context.user_data.get("pending_title", "ویدیو")
+    is_youtube: bool = context.user_data.get("pending_is_youtube", True)
 
     if not url:
         await _edit_message(query.message, MSG_SESSION_EXPIRED + _footer())
         return
 
-    context.user_data["pending_quality"] = quality
-
     qlabel = QUALITY_LABELS.get(quality, quality)
+
+    if not is_youtube:
+        # Non-YouTube: skip destination step, always send to Telegram
+        url = context.user_data.pop("pending_url")
+        title = context.user_data.pop("pending_title", "ویدیو")
+        context.user_data.pop("pending_is_youtube", None)
+
+        user = update.effective_user
+        if rate_limiter.is_at_limit(user.id):
+            await _edit_message(
+                query.message,
+                MSG_RATE_LIMITED.format(
+                    count=rate_limiter.get_active_count(user.id),
+                    max=config.MAX_CONCURRENT_PER_USER,
+                ) + _footer(),
+            )
+            return
+
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        status_msg = await query.message.reply_text(
+            "⏳ در حال شروع\\.\\.\\." + _footer(), parse_mode="MarkdownV2"
+        )
+        asyncio.create_task(
+            _pipeline(
+                user_id=user.id,
+                url=url,
+                quality=quality,
+                title=title,
+                message=status_msg,
+                destination="telegram",
+                is_youtube=False,
+                chat_id=update.effective_chat.id,
+                context=context,
+            )
+        )
+        return
+
+    # YouTube: show destination selection
+    context.user_data["pending_quality"] = quality
     await _edit_message(
         query.message,
         MSG_DESTINATION_SELECTION.format(
@@ -296,7 +358,7 @@ async def handle_destination_callback(
     data: str = query.data  # type: ignore[assignment]
 
     if data == "dest_cancel":
-        for k in ("pending_url", "pending_title", "pending_quality"):
+        for k in ("pending_url", "pending_title", "pending_quality", "pending_is_youtube"):
             context.user_data.pop(k, None)
         await _edit_message(query.message, MSG_CANCELLED + _footer())
         return
@@ -305,6 +367,7 @@ async def handle_destination_callback(
     url: str | None = context.user_data.pop("pending_url", None)
     title: str = context.user_data.pop("pending_title", "ویدیو")
     quality: str = context.user_data.pop("pending_quality", "best")
+    context.user_data.pop("pending_is_youtube", None)  # always True here (YouTube flow)
 
     if not url:
         await _edit_message(query.message, MSG_SESSION_EXPIRED + _footer())
@@ -337,6 +400,7 @@ async def handle_destination_callback(
             title=title,
             message=status_msg,
             destination=destination,
+            is_youtube=True,
             chat_id=update.effective_chat.id,
             context=context,
         )
@@ -491,6 +555,7 @@ async def _pipeline(
     title: str,
     message,
     destination: str,
+    is_youtube: bool,
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -532,7 +597,7 @@ async def _pipeline(
             ) + _footer()
         )
 
-        dl = await download_video(url, quality, _on_dl)
+        dl = await download_video(url, quality, is_youtube=is_youtube, progress_cb=_on_dl)
         download_dir = dl["download_dir"]
         file_path: str = dl["file_path"]
         size_mb: float = dl["size_mb"]

@@ -11,7 +11,7 @@ from bot.config import config
 
 
 def _base_ydl_opts() -> dict:
-    """Base yt-dlp options shared by all calls."""
+    """Base yt-dlp options for YouTube (with bot-detection bypass)."""
     opts: dict = {
         "extractor_args": {"youtube": {"player_client": ["web"]}},
         "remote_components": ["ejs:github"],
@@ -22,6 +22,17 @@ def _base_ydl_opts() -> dict:
         opts["cookiefile"] = str(p)
     else:
         logger.warning("YT cookies file not found at {} — YouTube may block requests", p)
+    if config.PROXY_URL:
+        opts["proxy"] = config.PROXY_URL
+    return opts
+
+
+def _base_ydl_opts_generic() -> dict:
+    """Base yt-dlp options for non-YouTube sources (Twitter, m3u8, direct links, …)."""
+    opts: dict = {
+        "concurrent_fragment_downloads": 4,   # speed up HLS/DASH segment downloads
+        "hls_prefer_native": False,            # use ffmpeg for HLS — more reliable muxing
+    }
     if config.PROXY_URL:
         opts["proxy"] = config.PROXY_URL
     return opts
@@ -97,9 +108,10 @@ def format_views(views: Optional[int]) -> str:
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
-async def get_video_info(url: str) -> dict:
+async def get_video_info(url: str, is_youtube: bool = True) -> dict:
     """Fetch video metadata *without* downloading anything."""
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_base_ydl_opts()}
+    base = _base_ydl_opts() if is_youtube else _base_ydl_opts_generic()
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **base}
     loop = asyncio.get_event_loop()
 
     def _fetch() -> dict:
@@ -112,6 +124,7 @@ async def get_video_info(url: str) -> dict:
 async def download_video(
     url: str,
     quality: str,
+    is_youtube: bool = True,
     progress_cb: Optional[ProgressCallback] = None,
 ) -> dict:
     """
@@ -172,6 +185,7 @@ async def download_video(
     else:
         postprocessors = [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
 
+    base = _base_ydl_opts() if is_youtube else _base_ydl_opts_generic()
     ydl_opts = {
         "format": fmt,
         "outtmpl": str(download_dir / "%(title)s.%(ext)s"),
@@ -181,7 +195,7 @@ async def download_video(
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
-        **_base_ydl_opts(),
+        **base,
         "postprocessors": postprocessors,
     }
 
